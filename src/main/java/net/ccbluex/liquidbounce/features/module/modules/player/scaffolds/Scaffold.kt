@@ -69,9 +69,13 @@ object Scaffold : Module("Scaffold", Category.PLAYER, Keyboard.KEY_V) {
     // -->
 
     val scaffoldMode by choices(
-        "ScaffoldMode", arrayOf("Normal", "Rewinside", "Expand", "Telly", "GodBridge"), "Normal"
+        "ScaffoldMode", arrayOf("Normal", "Rewinside", "Expand", "Telly", "GodBridge","Cuttay"), "Normal"
     )
-
+    // Cuttay mode sub-values
+    private val cuttayLegitRotations by boolean("CuttayLegitRotations", true) { scaffoldMode == "Cuttay" }
+    private val cuttayRandomJump by boolean("CuttayRandomJump", true) { scaffoldMode == "Cuttay" }
+    private val cuttayMinJumpDelay by int("CuttayMinJumpDelay", 1, 1..5) { scaffoldMode == "Cuttay" }
+    private val cuttayMaxJumpDelay by int("CuttayMaxJumpDelay", 3, 1..8) { scaffoldMode == "Cuttay" }
     // Expand
     private val omniDirectionalExpand by boolean("OmniDirectionalExpand", false) { scaffoldMode == "Expand" }
     private val expandLength by int("ExpandLength", 1, 1..6) { scaffoldMode == "Expand" }
@@ -235,7 +239,12 @@ object Scaffold : Module("Scaffold", Category.PLAYER, Keyboard.KEY_V) {
         get() = down && !sameY && GameSettings.isKeyDown(mc.gameSettings.keyBindSneak) && scaffoldMode !in arrayOf(
             "GodBridge", "Telly"
         ) && blocksAmount() > 1
-
+    private fun smoothRotation(from: Float, to: Float, maxChange: Float): Float {
+        var delta = ((to - from + 540) % 360) - 180
+        if (delta > maxChange) delta = maxChange
+        else if (delta < -maxChange) delta = -maxChange
+        return (from + delta)
+    }
     // Current rotation
     private val currRotation
         get() = RotationUtils.currentRotation ?: mc.thePlayer.rotation
@@ -553,6 +562,16 @@ object Scaffold : Module("Scaffold", Category.PLAYER, Keyboard.KEY_V) {
 
             blocksToJump = blocksToJumpRange.random()
         }
+        // === CUTTAY MODE ===
+        if (scaffoldMode == "Cuttay" && player.onGround) {
+            // Jump randomly (legit style)
+            val jumpDelay = RandomUtils.nextInt(cuttayMinJumpDelay, cuttayMaxJumpDelay)
+            if (cuttayRandomJump && player.ticksExisted % jumpDelay == 0) {
+                event.originalInput.jump = true
+            }
+            // Không bao giờ sneak khi Cuttay
+            event.originalInput.sneak = false
+        }
     }
 
     fun update() {
@@ -568,7 +587,16 @@ object Scaffold : Module("Scaffold", Category.PLAYER, Keyboard.KEY_V) {
 
     private fun setRotation(rotation: Rotation, ticks: Int) {
         val player = mc.thePlayer ?: return
-
+        if (scaffoldMode == "Cuttay" && cuttayLegitRotations) {
+            // Rotation mượt, random như người thật
+            val prevRot = RotationUtils.currentRotation ?: player.rotation
+            val maxYawChange = (4.5 + Math.random() * 2.5).toFloat()
+            val maxPitchChange = (3.2 + Math.random() * 1.5).toFloat()
+            val newYaw = smoothRotation(prevRot.yaw, rotation.yaw, maxYawChange)
+            val newPitch = smoothRotation(prevRot.pitch, rotation.pitch, maxPitchChange)
+            setTargetRotation(Rotation(newYaw, newPitch), options, ticks)
+            return
+        }
         if (scaffoldMode == "Telly" && player.isMoving) {
             if (player.airTicks < ticksUntilRotation.random() && ticksUntilJump >= jumpTicks) {
                 return

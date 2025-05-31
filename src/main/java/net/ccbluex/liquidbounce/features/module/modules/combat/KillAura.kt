@@ -46,7 +46,6 @@ import net.ccbluex.liquidbounce.utils.rotation.RotationUtils.getVectorForRotatio
 import net.ccbluex.liquidbounce.utils.rotation.RotationUtils.isRotationFaced
 import net.ccbluex.liquidbounce.utils.rotation.RotationUtils.isVisible
 import net.ccbluex.liquidbounce.utils.rotation.RotationUtils.rotationDifference
-import net.ccbluex.liquidbounce.utils.rotation.RotationUtils.searchCenter
 import net.ccbluex.liquidbounce.utils.rotation.RotationUtils.serverRotation
 import net.ccbluex.liquidbounce.utils.rotation.RotationUtils.setTargetRotation
 import net.ccbluex.liquidbounce.utils.rotation.RotationUtils.toRotation
@@ -92,9 +91,7 @@ object KillAura : Module("KillAura", Category.COMBAT, Keyboard.KEY_G) {
     private val preferredSlot by int("PreferredSlot", 1, 1..9) { activationSlot }
 
     private val clickOnly by boolean("ClickOnly", false)
-
-    // Range
-    // TODO: Make block range independent from attack range
+    
     private val range: Float by float("Range", 3.7f, 1f..8f).onChanged {
         blockRange = blockRange.coerceAtMost(it)
     }
@@ -750,7 +747,12 @@ object KillAura : Module("KillAura", Category.COMBAT, Keyboard.KEY_G) {
     // Cache for distance calculations
     private var lastDistanceCheck = 0L
     private var cachedDistance = 0f
-    
+    private fun smoothRotation(from: Float, to: Float, maxChange: Float): Float {
+        var delta = ((to - from + 540) % 360) - 180
+        if (delta > maxChange) delta = maxChange
+        else if (delta < -maxChange) delta = -maxChange
+        return (from + delta)
+    }
     private fun updateTarget() {
         if (shouldPrioritize()) return
 
@@ -870,79 +872,74 @@ object KillAura : Module("KillAura", Category.COMBAT, Keyboard.KEY_G) {
      */
     private fun updateRotations(entity: Entity): Boolean {
         val player = mc.thePlayer ?: return false
-        
+
         // Early exit if shouldn't rotate
         if (shouldPrioritize() || !options.rotationsActive) {
             return player.getDistanceToEntityBox(entity) <= range
         }
 
-        if (!options.rotationsActive) {
-            return player.getDistanceToEntityBox(entity) <= range
-        }
-
+        // === 1. Predict movement như cũ ===
         val prediction = entity.currPos.subtract(entity.prevPos).times(2 + predictEnemyPosition.toDouble())
-
         val boundingBox = entity.hitBox.offset(prediction)
         val (currPos, oldPos) = player.currPos to player.prevPos
 
         val simPlayer = SimulatedPlayer.fromClientPlayer(RotationUtils.modifiedInput)
-
         simPlayer.rotationYaw = (currentRotation ?: player.rotation).yaw
 
         var pos = currPos
-
         repeat(predictClientMovement) {
             val previousPos = simPlayer.pos
-
             simPlayer.tick()
-
             if (predictOnlyWhenOutOfRange) {
                 player.setPosAndPrevPos(simPlayer.pos)
-
                 val currDist = player.getDistanceToEntityBox(entity)
-
                 player.setPosAndPrevPos(previousPos)
-
                 val prevDist = player.getDistanceToEntityBox(entity)
-
                 player.setPosAndPrevPos(currPos, oldPos)
                 pos = simPlayer.pos
-
                 if (currDist <= range && currDist <= prevDist) {
                     return@repeat
                 }
             }
-
             pos = previousPos
         }
-
         player.setPosAndPrevPos(pos)
 
-        val rotation = searchCenter(
-            boundingBox,
-            generateSpotBasedOnDistance,
-            outBorder && !attackTimer.hasTimePassed(attackDelay / 2),
-            randomization,
-            predict = false,
-            lookRange = range + scanRange,
-            attackRange = range,
-            throughWallsRange = throughWallsRange,
-            bodyPoints = listOf(highestBodyPointToTarget, lowestBodyPointToTarget),
-            horizontalSearch = horizontalBodySearchRange
-        )
+        // === 2. Chọn điểm random trên bounding box (body/head/feet) ===
+        val bodyPoints = listOf(0.1, 0.5, 0.9)
+        val randBody = bodyPoints.random() + (Math.random() - 0.5) * 0.12 // lệch nhẹ
+        val box = boundingBox
+        val x = box.minX + (box.maxX - box.minX) * Math.random()
+        val y = box.minY + (box.maxY - box.minY) * randBody
+        val z = box.minZ + (box.maxZ - box.minZ) * Math.random()
 
-        if (rotation == null) {
-            player.setPosAndPrevPos(currPos, oldPos)
+        // === 3. Tính toán rotation tới điểm đó ===
+        val eyes = player.eyes
+        val dx = x - eyes.xCoord
+        val dy = y - eyes.yCoord
+        val dz = z - eyes.zCoord
+        val dist = Math.sqrt(dx*dx + dz*dz)
+        var yaw = Math.toDegrees(Math.atan2(dz, dx)).toFloat() - 90f
+        var pitch = Math.toDegrees(-Math.atan2(dy, dist)).toFloat()
 
-            return false
-        }
+        // === 4. Thêm random nhỏ vào yaw/pitch (giống tay người run) ===
+        yaw += ((Math.random() - 0.5) * 3.0).toFloat() // 3 độ
+        pitch += ((Math.random() - 0.5) * 2.2).toFloat() // 2.2 độ
 
-        setTargetRotation(rotation, options = options)
+        // === 5. Smooth xoay (xoay tối đa mỗi tick) ===
+        val prevRot = currentRotation ?: player.rotation
+        val maxYawChange = (4.5 + Math.random() * 2.5).toFloat() // 4.5~7.0 độ/tick
+        val maxPitchChange = (3.2 + Math.random() * 1.5).toFloat() // 3.2~4.7 độ/tick
+        val newYaw = smoothRotation(prevRot.yaw, yaw, maxYawChange)
+        val newPitch = smoothRotation(prevRot.pitch, pitch, maxPitchChange)
+        val legitRotation = Rotation(newYaw, newPitch)
+
+        setTargetRotation(legitRotation, options = options)
 
         player.setPosAndPrevPos(currPos, oldPos)
-
         return true
     }
+
 
     private fun ticksSinceClick() = runTimeTicks - (attackTickTimes.lastOrNull()?.second ?: 0)
 
